@@ -1,5 +1,7 @@
 # Extract
 
+add zip stream support
+
 [![Build Status](https://travis-ci.org/codeclysm/extract.svg?branch=master)](https://travis-ci.org/codeclysm/extract)
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/codeclysm/extract/master/LICENSE)
 [![Godoc Reference](https://img.shields.io/badge/Godoc-Reference-blue.svg)](https://godoc.org/github.com/codeclysm/extract)

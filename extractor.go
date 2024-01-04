@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"github.com/xenking/zipstream"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,6 +30,8 @@ type Extractor struct {
 		OpenFile(name string, flag int, perm os.FileMode) (*os.File, error)
 		Symlink(string, string) error
 	}
+
+	Stream bool
 }
 
 // Archive extracts a generic archived stream of data in the specified location.
@@ -250,6 +253,8 @@ func (e *Extractor) Zip(ctx context.Context, body io.Reader, location string, re
 			return fmt.Errorf("failed to seek to the beginning of the body: %w", err)
 		}
 		bodySize = endPos
+	} else if e.Stream {
+		return e.ZipStream(ctx, body, location, rename)
 	} else {
 		// read the whole body into a buffer. Not sure this is the best way to do it
 		buffer := bytes.NewBuffer([]byte{})
@@ -323,19 +328,69 @@ func (e *Extractor) Zip(ctx context.Context, body io.Reader, location string, re
 		}
 	}
 
-	// Now we make another pass creating the links
-	for i := range links {
+	return e.makeLinks(ctx, links)
+}
+
+func (e *Extractor) ZipStream(ctx context.Context, body io.Reader, location string, rename Renamer) error {
+	var links []link
+	zr := zipstream.NewReader(body)
+
+	for {
 		select {
 		case <-ctx.Done():
 			return errors.New("interrupted")
 		default:
 		}
-		if err := e.FS.Symlink(links[i].Name, links[i].Path); err != nil {
-			return errors.Annotatef(err, "Create link %s", links[i].Path)
+
+		header, err := zr.Next()
+
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return err
+			}
+		}
+
+		path := header.Name
+
+		forceDir := strings.HasSuffix(path, "\\")
+		path = strings.Replace(path, "\\", "/", -1)
+
+		if rename != nil {
+			path = rename(path)
+		}
+
+		if path == "" {
+			continue
+		}
+
+		if path, err = safeJoin(location, path); err != nil {
+			continue
+		}
+
+		info := header.FileInfo()
+
+		switch {
+		case info.IsDir() || forceDir:
+			if err := e.FS.MkdirAll(path, info.Mode()|os.ModeDir|100); err != nil {
+				return errors.Annotatef(err, "Create directory %s", path)
+			}
+		// We only check for symlinks because hard links aren't possible
+		case info.Mode()&os.ModeSymlink != 0:
+			if name, err := io.ReadAll(zr); err != nil {
+				return errors.Annotatef(err, "Read address of link %s", path)
+			} else {
+				links = append(links, link{Path: path, Name: string(name)})
+			}
+		default:
+			if err := e.copy(ctx, path, info.Mode(), zr); err != nil {
+				return errors.Annotatef(err, "Create file %s", path)
+			}
 		}
 	}
 
-	return nil
+	return e.makeLinks(ctx, links)
 }
 
 func (e *Extractor) copy(ctx context.Context, path string, mode os.FileMode, src io.Reader) error {
@@ -351,6 +406,22 @@ func (e *Extractor) copy(ctx context.Context, path string, mode os.FileMode, src
 	defer file.Close()
 	_, err = copyCancel(ctx, file, src)
 	return err
+}
+
+func (e *Extractor) makeLinks(ctx context.Context, links []link) error {
+	// Now we make another pass creating the links
+	for i := range links {
+		select {
+		case <-ctx.Done():
+			return errors.New("interrupted")
+		default:
+		}
+		if err := e.FS.Symlink(links[i].Name, links[i].Path); err != nil {
+			return errors.Annotatef(err, "Create link %s", links[i].Path)
+		}
+	}
+
+	return nil
 }
 
 // match reads the first 512 bytes, calls types.Match and returns a reader
