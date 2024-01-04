@@ -1,4 +1,4 @@
-module github.com/codeclysm/extract/v3
+module github.com/sculxp/extract
 
 go 1.17
 
